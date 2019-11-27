@@ -9,9 +9,15 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	boshcmd "github.com/cloudfoundry/bosh-cli/cmd"
+	bilog "github.com/cloudfoundry/bosh-cli/logger"
+	boshui "github.com/cloudfoundry/bosh-cli/ui"
+	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
 	"github.com/dpb587/metalink"
@@ -111,50 +117,31 @@ func (s *Blobs) Unmarshal(data []byte) error {
 	return nil
 }
 
-func boshBinaryPath() (string, error) {
-	var err error
-	binaryPath := os.Getenv("BOSH_BINARY_PATH")
-	if binaryPath != "" {
-		return binaryPath, nil
-	}
-	binaryPath, err = exec.LookPath("bosh")
+func bosh(args []string) error {
+	level := boshlog.LevelNone
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGHUP)
+	logger, _ := bilog.NewSignalableLogger(boshlog.NewLogger(level), c)
+
+	ui := boshui.NewConfUI(logger)
+	defer ui.Flush()
+
+	cmdFactory := boshcmd.NewFactory(boshcmd.NewBasicDeps(ui, logger))
+
+	cmd, err := cmdFactory.New(args)
 	if err != nil {
-		return "", fmt.Errorf("lookup bosh binary in PATH: %v", err)
+		panic(err)
 	}
-	return binaryPath, nil
+
+	return cmd.Execute()
 }
 
-func boshRemoveBlob(boshBinaryPath, blobPath, releaseDir string) error {
-	cmd := exec.Command(
-		boshBinaryPath,
-		"remove-blob",
-		fmt.Sprintf("--dir=%s", releaseDir),
-		blobPath,
-	)
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("run boshRemoveBlob command: %v", err)
-	}
-
-	return nil
+func boshAddBlob(filePath, blobPath, releaseDir string) error {
+	return bosh([]string{"add-blob", fmt.Sprintf("--dir=%s", releaseDir), filePath, blobPath})
 }
 
-func boshAddBlob(boshBinaryPath, blobPath, blobName, releaseDir string) error {
-	cmd := exec.Command(
-		boshBinaryPath,
-		"add-blob",
-		fmt.Sprintf("--dir=%s", releaseDir),
-		blobPath,
-		blobName,
-	)
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("run boshAddBlob command: %v", err)
-	}
-
-	return nil
+func boshRemoveBlob(blobPath, releaseDir string) error {
+	return bosh([]string{"remove-blob", fmt.Sprintf("--dir=%s", releaseDir), blobPath})
 }
 
 func main() {
@@ -181,19 +168,13 @@ func main() {
 		log.Fatalf("decoding blobs file: %v", err)
 	}
 
-	var boshBinary string
-	boshBinary, err = boshBinaryPath()
-	if err != nil {
-		panic(err)
-	}
-
 	resourcePaths, err := filepath.Glob(filepath.Join(releaseDir, "config", "blobs", "*", "resource.yml"))
 	if err != nil {
 		panic(err)
 	}
 	for _, r := range resourcePaths {
-		localBlobPath := filepath.Dir(r)
-		packageName := filepath.Base(localBlobPath)
+		localBlobDir := filepath.Dir(r)
+		packageName := filepath.Base(localBlobDir)
 		repositoryBytes, err := ioutil.ReadFile(r)
 		if err != nil {
 			panic(err)
@@ -243,34 +224,34 @@ func main() {
 		}
 
 		// compare latest upstream version with version from blobs.yml
+		blobFilePath := filepath.Join(localBlobDir, file.Name)
 		for _, b := range blobs {
 
 			if b.PackageName != packageName {
 				continue
 			}
-			fmt.Printf("%v, %v\n", b.Path, b.Sha)
+			fmt.Printf("Checking %s (%s)\n", b.Path, b.Sha)
 
 			var newBlob Blob
-			newBlob, err = DownloadFile(filepath.Join(localBlobPath, file.Name), file.URLs[0].URL)
+			newBlob, err = DownloadFile(blobFilePath, file.URLs[0].URL)
 			if err != nil {
 				panic(err)
 			}
 
 			if b.Sha == newBlob.Sha {
-				// blob did not change, nothing to do
+				fmt.Printf("Skipping package '%s'. Blobs digest '%s' did not change.\n", b.PackageName, newBlob.Sha)
 				continue
 			}
 
 			newBlob.Path = fmt.Sprintf("%s/%s", packageName, file.Name)
 			fmt.Printf("Upgrading blob: %s (%s) --> %s (%s)\n", b.Path, b.Sha, newBlob.Path, newBlob.Sha)
 
-			err = boshRemoveBlob(boshBinary, b.Path, releaseDir)
+			err = boshRemoveBlob(b.Path, releaseDir)
 			if err != nil {
 				panic(err)
 			}
 
-			// TODO: somehow boshAddBlob adds different digest than sha256sum
-			err = boshAddBlob(boshBinary, r, newBlob.Path, releaseDir)
+			err = boshAddBlob(blobFilePath, newBlob.Path, releaseDir)
 			if err != nil {
 				panic(err)
 			}
