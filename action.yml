@@ -1,0 +1,12 @@
+---
+name: 'bosh-blobs-upgrader-action'
+description: 'Upgrade bosh blobs automatically when new versions of external blobs are released.'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - ${{ inputs.repository }}
+inputs:
+  repository:
+    required: true
+    description: 'Path to the bosh-release repository.'
