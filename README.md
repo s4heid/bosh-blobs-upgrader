@@ -29,7 +29,7 @@ The docker container can be run locally with the following command:
 ```sh
 docker run --rm \
     -v $HOME/path/to/bosh-release:/home/path/to/bosh-release \
-    docker.pkg.github.com/s4heid/bosh-blobs-upgrader-action/bosh-blobs-upgrader-action:dev\ \
+    docker.pkg.github.com/s4heid/bosh-blobs-upgrader-action/bosh-blobs-upgrader-action:latest\ \
     /home/path/to/bosh-release
 ```
 
@@ -37,3 +37,7 @@ docker run --rm \
 ## References
 
 - [dpb587/bosh-release-blobs-upgrader-pipeline](https://github.com/dpb587/bosh-release-blobs-upgrader-pipeline)
+
+## License
+
+[MIT License](./LICENSE)
