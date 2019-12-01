@@ -95,6 +95,11 @@ func DownloadFile(filepath, url string) (Blob, error) {
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
 
+	err = os.Chmod(filepath, 0777)
+	if err != nil {
+		return blob, fmt.Errorf("changing permissions: %v", err)
+	}
+
 	sha, err := sha256sum(filepath)
 	if err != nil {
 		return blob, fmt.Errorf("calculating shasum: %v", err)

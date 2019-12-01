@@ -8,7 +8,7 @@ The following list of input arguments can be configured for now.
 
 | Input                         | Description                                        |
 |-------------------------------|----------------------------------------------------|
-| repository                    | Path to the bosh-release repository                |
+| `repository`                  | Path to the bosh-release repository                |
 
 **Example usage:**
 
