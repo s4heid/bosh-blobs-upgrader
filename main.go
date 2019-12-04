@@ -13,11 +13,14 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	boshcmd "github.com/cloudfoundry/bosh-cli/cmd"
 	bilog "github.com/cloudfoundry/bosh-cli/logger"
 	boshui "github.com/cloudfoundry/bosh-cli/ui"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
+	git "gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing/object"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
 	"github.com/dpb587/metalink"
@@ -122,6 +125,13 @@ func (s *Blobs) Unmarshal(data []byte) error {
 	return nil
 }
 
+func getFromEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}
+
 func bosh(args []string) error {
 	level := boshlog.LevelNone
 	c := make(chan os.Signal, 1)
@@ -149,6 +159,10 @@ func boshRemoveBlob(blobPath, releaseDir string) error {
 	return bosh([]string{"remove-blob", fmt.Sprintf("--dir=%s", releaseDir), blobPath})
 }
 
+func boshUploadBlobs(releaseDir string) error {
+	return bosh([]string{"upload-blobs", fmt.Sprintf("--dir=%s", releaseDir)})
+}
+
 func main() {
 	var err error
 	var releaseDir string
@@ -161,6 +175,17 @@ func main() {
 			panic(err)
 		}
 	}
+
+	r, err := git.PlainOpen(releaseDir)
+	if err != nil {
+		panic(err)
+	}
+	w, err := r.Worktree()
+	if err != nil {
+		panic(err)
+	}
+
+	os.Setenv("BOSH_NON_INTERACTIVE", "true")
 
 	blobsData, err := ioutil.ReadFile(filepath.Join(releaseDir, "config", "blobs.yml"))
 	if err != nil {
@@ -177,6 +202,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	commitHeader := "Update blobs:"
+	commitBody := ""
 	for _, r := range resourcePaths {
 		localBlobDir := filepath.Dir(r)
 		packageName := filepath.Base(localBlobDir)
@@ -203,13 +230,12 @@ func main() {
 			}
 			v, _ := version.NewVersion(rawVersion)
 			if latestVersion.LessThan(v) {
-				fmt.Printf("%s is less than %s", latestVersion, v)
 				latestVersion = v
 			}
 		}
 
 		meta4Bytes, err := api.ExecuteScript(resourceConfig.Source.MetalinkGet, map[string]string{
-			"version": latestVersion.String(),
+			"version": latestVersion.Original(),
 		})
 		if err != nil {
 			errors.Wrap(err, "executing metalink_get script")
@@ -249,6 +275,8 @@ func main() {
 			}
 
 			newBlob.Path = fmt.Sprintf("%s/%s", packageName, file.Name)
+			commitHeader += fmt.Sprintf(" %s", packageName)
+			commitBody += fmt.Sprintf(" - %q --> %q\n", b.Path, newBlob.Path)
 			fmt.Printf("Upgrading blob: %s (%s) --> %s (%s)\n", b.Path, b.Sha, newBlob.Path, newBlob.Sha)
 
 			err = boshRemoveBlob(b.Path, releaseDir)
@@ -261,5 +289,49 @@ func main() {
 				panic(err)
 			}
 		}
+
 	}
+
+	b := filepath.Join("config", "blobs.yml")
+	_, err = w.Add(b)
+	if err != nil {
+		panic(err)
+	}
+
+	status, err := w.Status()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Status: ", status)
+
+	if status.File(b).Staging != git.Modified {
+		fmt.Println("No changes in git detected.")
+		os.Exit(1)
+	}
+
+	err = boshUploadBlobs(releaseDir)
+	if err != nil {
+		panic(err)
+	}
+
+	gitName := getFromEnv("GIT_NAME", "Dependency Bot")
+	gitEmail := getFromEnv("GIT_EMAIL", "ci@localhost")
+	commitMsg := commitHeader + "\n\n" + commitBody
+	commit, err := w.Commit(commitMsg, &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  gitName,
+			Email: gitEmail,
+			When:  time.Now(),
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	obj, err := r.CommitObject(commit)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(obj)
 }
