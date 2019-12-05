@@ -20,6 +20,7 @@ import (
 	boshui "github.com/cloudfoundry/bosh-cli/ui"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 	git "gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
@@ -309,18 +310,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	if _, err := os.Stat(filepath.Join("config", "private.yml")); os.IsNotExist(err) {
+		panic(fmt.Errorf("blobstore credentials not set: %v", err))
+	}
 	err = boshUploadBlobs(releaseDir)
 	if err != nil {
 		panic(err)
 	}
 
-	gitName := getFromEnv("GIT_NAME", "Dependency Bot")
-	gitEmail := getFromEnv("GIT_EMAIL", "ci@localhost")
+	headRef, err := r.Head()
+	if err != nil {
+		panic(err)
+	}
+	updateBranch := plumbing.NewBranchReferenceName(getFromEnv("GIT_UPDATE_BRANCH", "bosh-blobs-upgrader"))
+	ref := plumbing.NewHashReference(updateBranch, headRef.Hash())
+	err = r.Storer.SetReference(ref)
+	if err != nil {
+		panic(err)
+	}
+
 	commitMsg := commitHeader + "\n\n" + commitBody
 	commit, err := w.Commit(commitMsg, &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  gitName,
-			Email: gitEmail,
+			Name:  getFromEnv("GIT_NAME", "Dependency Bot"),
+			Email: getFromEnv("GIT_EMAIL", "ci@localhost"),
 			When:  time.Now(),
 		},
 	})
@@ -332,6 +345,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
 	fmt.Println(obj)
+
+	err = r.Push(&git.PushOptions{})
+	if err != nil {
+		panic(err)
+	}
 }
