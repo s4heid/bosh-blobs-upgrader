@@ -20,6 +20,7 @@ import (
 	boshui "github.com/cloudfoundry/bosh-cli/ui"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 	git "gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	githttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
@@ -318,7 +319,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, err := os.Stat(filepath.Join("config", "private.yml")); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(releaseDir, "config", "private.yml")); os.IsNotExist(err) {
 		panic(fmt.Errorf("blobstore credentials not set: %v", err))
 	}
 	err = boshUploadBlobs(releaseDir)
@@ -326,10 +327,12 @@ func main() {
 		panic(err)
 	}
 
-	headRef, err := r.Head()
+	_, err = w.Add(b)
 	if err != nil {
 		panic(err)
 	}
+
+	headRef, err := r.Head()
 	updateBranch := plumbing.NewBranchReferenceName(getFromEnv("GIT_UPDATE_BRANCH", "bosh-blobs-upgrader"))
 	ref := plumbing.NewHashReference(updateBranch, headRef.Hash())
 	err = r.Storer.SetReference(ref)
@@ -364,6 +367,7 @@ func main() {
 			Username: "token",
 			Password: token,
 		},
+		RefSpecs: []config.RefSpec{"+refs/heads/*:refs/remotes/origin/*"},
 		Progress: os.Stdout,
 	})
 	if err != nil {
