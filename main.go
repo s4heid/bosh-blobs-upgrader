@@ -22,6 +22,7 @@ import (
 	git "gopkg.in/src-d/go-git.v4"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
+	githttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
 	"github.com/dpb587/metalink"
@@ -131,6 +132,13 @@ func getFromEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getStrictFromEnv(key string) (string, error) {
+	if value, ok := os.LookupEnv(key); ok {
+		return value, nil
+	}
+	return "", errors.New(fmt.Sprintf("variable %q not set in environment", key))
 }
 
 func bosh(args []string) error {
@@ -347,7 +355,17 @@ func main() {
 	}
 	fmt.Println(obj)
 
-	err = r.Push(&git.PushOptions{})
+	token, err := getStrictFromEnv("GITHUB_TOKEN")
+	if err != nil {
+		panic(err)
+	}
+	err = r.Push(&git.PushOptions{
+		Auth: &githttp.BasicAuth{
+			Username: "token",
+			Password: token,
+		},
+		Progress: os.Stdout,
+	})
 	if err != nil {
 		panic(err)
 	}
