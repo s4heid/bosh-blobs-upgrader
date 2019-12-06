@@ -3,7 +3,7 @@ name: 'bosh-blobs-upgrader-action'
 description: 'Upgrade bosh blobs automatically when new versions of external blobs are released.'
 runs:
   using: 'docker'
-  image: 'docker://docker.pkg.github.com/s4heid/bosh-blobs-upgrader-action/bosh-blobs-upgrader-action:latest'
+  image: 'Dockerfile'
   args:
     - ${{ inputs.repository }}
 inputs:
