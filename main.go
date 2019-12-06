@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"text/template"
 	"time"
 
 	boshcmd "github.com/cloudfoundry/bosh-cli/cmd"
@@ -21,7 +20,6 @@ import (
 	boshui "github.com/cloudfoundry/bosh-cli/ui"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 	git "gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
@@ -33,8 +31,8 @@ import (
 
 // ResourceConfig .
 type ResourceConfig struct {
-	Source  Source  `yaml:"source"`
-	Version Version `yaml:"version"`
+	Source  Source      `yaml:"source"`
+	Version api.Version `yaml:"version"`
 }
 
 // Source .
@@ -42,17 +40,6 @@ type Source struct {
 	VersionCheck string `yaml:"version_check"`
 	MetalinkGet  string `yaml:"metalink_get"`
 	Version      string `yaml:"version,omitempty"`
-}
-
-// Version .
-type Version struct {
-	Version string `json:"version"`
-}
-
-// Metadata .
-type Metadata struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
 }
 
 // Blob .
@@ -174,12 +161,9 @@ func boshUploadBlobs(releaseDir string) error {
 
 func main() {
 	var (
-		err          error
-		releaseDir   string
-		funcs        = template.FuncMap{"join": strings.Join}
-		updatedBlobs = []string{}
+		err        error
+		releaseDir string
 	)
-	const master = `Updates:{{block "list" .}}{{"\n"}}{{range .}}{{println "-" .}}{{end}}{{end}}`
 
 	if len(os.Args) == 2 {
 		releaseDir = os.Args[1]
@@ -198,14 +182,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	// headRef, err := r.Head()
-	// updateBranch := plumbing.NewBranchReferenceName(getFromEnv("GIT_UPDATE_BRANCH", "bosh-blobs-upgrader"))
-	// ref := plumbing.NewHashReference(updateBranch, headRef.Hash())
-	// err = r.Storer.SetReference(ref)
-	// if err != nil {
-	// 	panic(err)
-	// }
 
 	os.Setenv("BOSH_NON_INTERACTIVE", "true")
 
@@ -276,7 +252,9 @@ func main() {
 			panic("more than one metalink URL per file is currently not supported.")
 		}
 
-		currentVersionBytes, err := ioutil.ReadFile(filepath.Join(localBlobDir, "version"))
+		versionPath := filepath.Join(localBlobDir, "version")
+
+		currentVersionBytes, err := ioutil.ReadFile(versionPath)
 		if err != nil && !os.IsNotExist(err) {
 			panic(err)
 		}
@@ -309,7 +287,6 @@ func main() {
 			newBlob.Path = fmt.Sprintf("%s/%s", packageName, file.Name)
 			commitHeader += fmt.Sprintf(" %s", packageName)
 			commitBody += fmt.Sprintf(" - %q --> %q\n", b.Path, newBlob.Path)
-			updatedBlobs = append(updatedBlobs, fmt.Sprintf("%s %s (from %s)\n", b.PackageName, latestVersion.Original(), currentVersionBytes))
 			fmt.Printf("Upgrading blob: %s (%s) --> %s (%s)\n", b.Path, b.Sha, newBlob.Path, newBlob.Sha)
 
 			err = boshRemoveBlob(b.Path, releaseDir)
@@ -323,17 +300,31 @@ func main() {
 			}
 		}
 
+		err = ioutil.WriteFile(versionPath, []byte(latestVersion.Original()), 0755)
+		if err != nil && !os.IsNotExist(err) {
+			panic(errors.Wrap(err, "writing version"))
+		}
+
+		relVersionPath, err := filepath.Rel(releaseDir, versionPath)
+		if err != nil {
+			panic(errors.Wrap(err, "relativizing version file"))
+		}
+
+		_, err = w.Add(relVersionPath)
+		if err != nil {
+			panic(errors.Wrapf(err, "adding %s", versionPath))
+		}
 	}
 
 	b := filepath.Join("config", "blobs.yml")
 	_, err = w.Add(b)
 	if err != nil {
-		panic(err)
+		panic(errors.Wrap(err, "adding blobs.yml"))
 	}
 
 	status, err := w.Status()
 	if err != nil {
-		panic(err)
+		panic(errors.Wrap(err, "status"))
 	}
 	fmt.Println("Status: ", status)
 
@@ -347,35 +338,12 @@ func main() {
 	}
 	err = boshUploadBlobs(releaseDir)
 	if err != nil {
-		panic(err)
-	}
-
-	changelogPath := filepath.Join(releaseDir, "config", "changelog")
-	if _, err := os.Stat(changelogPath); os.IsNotExist(err) {
-		os.Mkdir(changelogPath, 0755)
-	}
-	changelogVersion := getFromEnv("CHANGELOG_VERSION", fmt.Sprintf("%d", time.Now().Unix()))
-	fh, err := os.OpenFile(filepath.Join(changelogPath, fmt.Sprintf("CHANGELOG_%s.txt", changelogVersion)), os.O_CREATE|os.O_WRONLY, 0755)
-	if err != nil {
-		fmt.Printf("create file: %v", err)
-		os.Exit(1)
-	}
-
-	defer fh.Close()
-
-	masterTmpl, _ := template.New("master").Funcs(funcs).Parse(master)
-	if err := masterTmpl.Execute(fh, updatedBlobs); err != nil {
-		panic(err)
-	}
-
-	_, err = w.Add(changelogPath)
-	if err != nil {
-		panic(err)
+		panic(errors.Wrap(err, "uploading blobs"))
 	}
 
 	_, err = w.Add(b)
 	if err != nil {
-		panic(err)
+		panic(errors.Wrap(err, "adding blobs.yml"))
 	}
 
 	commitMsg := commitHeader + "\n\n" + commitBody
@@ -387,28 +355,12 @@ func main() {
 		},
 	})
 	if err != nil {
-		panic(err)
+		panic(errors.Wrap(err, "committing"))
 	}
 
 	obj, err := r.CommitObject(commit)
 	if err != nil {
-		panic(err)
+		panic(errors.Wrap(err, "writing commit"))
 	}
 	fmt.Println(obj)
-
-	// token, err := getStrictFromEnv("GITHUB_TOKEN")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// err = r.Push(&git.PushOptions{
-	// 	Auth: &githttp.BasicAuth{
-	// 		Username: "token",
-	// 		Password: token,
-	// 	},
-	// 	RefSpecs: []config.RefSpec{"+refs/heads/*:refs/remotes/origin/*"},
-	// 	Progress: os.Stdout,
-	// })
-	// if err != nil {
-	// 	panic(err)
-	// }
 }
