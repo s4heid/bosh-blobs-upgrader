@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
-	"html/template"
 	"io"
 	"io/ioutil"
 	"log"
@@ -14,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"text/template"
 	"time"
 
 	boshcmd "github.com/cloudfoundry/bosh-cli/cmd"
@@ -21,10 +21,8 @@ import (
 	boshui "github.com/cloudfoundry/bosh-cli/ui"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 	git "gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/config"
 	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
-	githttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
 	"github.com/dpb587/metalink"
@@ -201,6 +199,14 @@ func main() {
 		panic(err)
 	}
 
+	// headRef, err := r.Head()
+	// updateBranch := plumbing.NewBranchReferenceName(getFromEnv("GIT_UPDATE_BRANCH", "bosh-blobs-upgrader"))
+	// ref := plumbing.NewHashReference(updateBranch, headRef.Hash())
+	// err = r.Storer.SetReference(ref)
+	// if err != nil {
+	// 	panic(err)
+	// }
+
 	os.Setenv("BOSH_NON_INTERACTIVE", "true")
 
 	blobsData, err := ioutil.ReadFile(filepath.Join(releaseDir, "config", "blobs.yml"))
@@ -270,6 +276,16 @@ func main() {
 			panic("more than one metalink URL per file is currently not supported.")
 		}
 
+		currentVersionBytes, err := ioutil.ReadFile(filepath.Join(localBlobDir, "version"))
+		if err != nil && !os.IsNotExist(err) {
+			panic(err)
+		}
+
+		if string(currentVersionBytes) == latestVersion.Original() {
+			fmt.Printf("Skipping  package '%s'. Version is unchanged.\n", packageName)
+			continue
+		}
+
 		// compare latest upstream version with version from blobs.yml
 		blobFilePath := filepath.Join(localBlobDir, file.Name)
 		for _, b := range blobs {
@@ -293,7 +309,7 @@ func main() {
 			newBlob.Path = fmt.Sprintf("%s/%s", packageName, file.Name)
 			commitHeader += fmt.Sprintf(" %s", packageName)
 			commitBody += fmt.Sprintf(" - %q --> %q\n", b.Path, newBlob.Path)
-			updatedBlobs = append(updatedBlobs, fmt.Sprintf("%q (from %q)\n", b.Path, newBlob.Path))
+			updatedBlobs = append(updatedBlobs, fmt.Sprintf("%s %s (from %s)\n", b.PackageName, latestVersion.Original(), currentVersionBytes))
 			fmt.Printf("Upgrading blob: %s (%s) --> %s (%s)\n", b.Path, b.Sha, newBlob.Path, newBlob.Sha)
 
 			err = boshRemoveBlob(b.Path, releaseDir)
@@ -339,13 +355,16 @@ func main() {
 		os.Mkdir(changelogPath, 0755)
 	}
 	changelogVersion := getFromEnv("CHANGELOG_VERSION", fmt.Sprintf("%d", time.Now().Unix()))
-	f, err := os.Create(filepath.Join(changelogPath, fmt.Sprintf("CHANGELOG_%s.txt", changelogVersion)))
+	fh, err := os.OpenFile(filepath.Join(changelogPath, fmt.Sprintf("CHANGELOG_%s.txt", changelogVersion)), os.O_CREATE|os.O_WRONLY, 0755)
 	if err != nil {
 		fmt.Printf("create file: %v", err)
 		os.Exit(1)
 	}
+
+	defer fh.Close()
+
 	masterTmpl, _ := template.New("master").Funcs(funcs).Parse(master)
-	if err := masterTmpl.Execute(f, updatedBlobs); err != nil {
+	if err := masterTmpl.Execute(fh, updatedBlobs); err != nil {
 		panic(err)
 	}
 
@@ -355,14 +374,6 @@ func main() {
 	}
 
 	_, err = w.Add(b)
-	if err != nil {
-		panic(err)
-	}
-
-	headRef, err := r.Head()
-	updateBranch := plumbing.NewBranchReferenceName(getFromEnv("GIT_UPDATE_BRANCH", "bosh-blobs-upgrader"))
-	ref := plumbing.NewHashReference(updateBranch, headRef.Hash())
-	err = r.Storer.SetReference(ref)
 	if err != nil {
 		panic(err)
 	}
@@ -385,19 +396,19 @@ func main() {
 	}
 	fmt.Println(obj)
 
-	token, err := getStrictFromEnv("GITHUB_TOKEN")
-	if err != nil {
-		panic(err)
-	}
-	err = r.Push(&git.PushOptions{
-		Auth: &githttp.BasicAuth{
-			Username: "token",
-			Password: token,
-		},
-		RefSpecs: []config.RefSpec{"+refs/heads/*:refs/remotes/origin/*"},
-		Progress: os.Stdout,
-	})
-	if err != nil {
-		panic(err)
-	}
+	// token, err := getStrictFromEnv("GITHUB_TOKEN")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// err = r.Push(&git.PushOptions{
+	// 	Auth: &githttp.BasicAuth{
+	// 		Username: "token",
+	// 		Password: token,
+	// 	},
+	// 	RefSpecs: []config.RefSpec{"+refs/heads/*:refs/remotes/origin/*"},
+	// 	Progress: os.Stdout,
+	// })
+	// if err != nil {
+	// 	panic(err)
+	// }
 }
