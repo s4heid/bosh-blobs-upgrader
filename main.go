@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"html/template"
 	"io"
 	"io/ioutil"
 	"log"
@@ -174,8 +175,13 @@ func boshUploadBlobs(releaseDir string) error {
 }
 
 func main() {
-	var err error
-	var releaseDir string
+	var (
+		err          error
+		releaseDir   string
+		funcs        = template.FuncMap{"join": strings.Join}
+		updatedBlobs = []string{}
+	)
+	const master = `Updates:{{block "list" .}}{{"\n"}}{{range .}}{{println "-" .}}{{end}}{{end}}`
 
 	if len(os.Args) == 2 {
 		releaseDir = os.Args[1]
@@ -287,6 +293,7 @@ func main() {
 			newBlob.Path = fmt.Sprintf("%s/%s", packageName, file.Name)
 			commitHeader += fmt.Sprintf(" %s", packageName)
 			commitBody += fmt.Sprintf(" - %q --> %q\n", b.Path, newBlob.Path)
+			updatedBlobs = append(updatedBlobs, fmt.Sprintf("%q (from %q)\n", b.Path, newBlob.Path))
 			fmt.Printf("Upgrading blob: %s (%s) --> %s (%s)\n", b.Path, b.Sha, newBlob.Path, newBlob.Sha)
 
 			err = boshRemoveBlob(b.Path, releaseDir)
@@ -323,6 +330,26 @@ func main() {
 		panic(fmt.Errorf("blobstore credentials not set: %v", err))
 	}
 	err = boshUploadBlobs(releaseDir)
+	if err != nil {
+		panic(err)
+	}
+
+	changelogPath := filepath.Join(releaseDir, "config", "changelog")
+	if _, err := os.Stat(changelogPath); os.IsNotExist(err) {
+		os.Mkdir(changelogPath, 0755)
+	}
+	changelogVersion := getFromEnv("CHANGELOG_VERSION", fmt.Sprintf("%d", time.Now().Unix()))
+	f, err := os.Create(filepath.Join(changelogPath, fmt.Sprintf("CHANGELOG_%s.txt", changelogVersion)))
+	if err != nil {
+		fmt.Printf("create file: %v", err)
+		os.Exit(1)
+	}
+	masterTmpl, _ := template.New("master").Funcs(funcs).Parse(master)
+	if err := masterTmpl.Execute(f, updatedBlobs); err != nil {
+		panic(err)
+	}
+
+	_, err = w.Add(changelogPath)
 	if err != nil {
 		panic(err)
 	}
