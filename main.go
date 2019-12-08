@@ -19,12 +19,15 @@ import (
 	bilog "github.com/cloudfoundry/bosh-cli/logger"
 	boshui "github.com/cloudfoundry/bosh-cli/ui"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
+	"github.com/hashicorp/go-version"
 	git "gopkg.in/src-d/go-git.v4"
+	"gopkg.in/src-d/go-git.v4/config"
+	"gopkg.in/src-d/go-git.v4/plumbing"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
+	githttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
 	"github.com/dpb587/metalink"
-	"github.com/hashicorp/go-version"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
@@ -181,6 +184,26 @@ func main() {
 	w, err := r.Worktree()
 	if err != nil {
 		panic(err)
+	}
+
+	updateBranch, _ := getStrictFromEnv("GIT_UPDATE_BRANCH")
+	headRef, _ := r.Head()
+	u := plumbing.NewBranchReferenceName(updateBranch)
+	if updateBranch != "" && headRef.Name() != u {
+		fmt.Printf("git checkout %s; before %s\n", u, headRef.Name())
+		_ = r.Fetch(&git.FetchOptions{Force: true})
+		err = w.Checkout(&git.CheckoutOptions{
+			Branch: u,
+			Force:  true,
+			Create: true,
+		})
+		if err != nil {
+			panic(errors.Wrap(err, "check out branch"))
+		}
+		w.Reset(&git.ResetOptions{
+			Commit: headRef.Hash(),
+			Mode:   git.HardReset,
+		})
 	}
 
 	os.Setenv("BOSH_NON_INTERACTIVE", "true")
@@ -363,4 +386,21 @@ func main() {
 		panic(errors.Wrap(err, "writing commit"))
 	}
 	fmt.Println(obj)
+
+	token, _ := getStrictFromEnv("GITHUB_TOKEN")
+	if token != "" {
+		fmt.Println("Pushing state")
+		refSpecs := config.RefSpec("+" + u.String() + ":refs/remotes/origin/" + updateBranch)
+		err = r.Push(&git.PushOptions{
+			Auth: &githttp.BasicAuth{
+				Username: "token",
+				Password: token,
+			},
+			RefSpecs: []config.RefSpec{refSpecs},
+			Progress: os.Stdout,
+		})
+		if err != nil {
+			panic(err)
+		}
+	}
 }
