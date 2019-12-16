@@ -13,18 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	boshcmd "github.com/cloudfoundry/bosh-cli/cmd"
 	bilog "github.com/cloudfoundry/bosh-cli/logger"
 	boshui "github.com/cloudfoundry/bosh-cli/ui"
 	boshlog "github.com/cloudfoundry/bosh-utils/logger"
 	"github.com/hashicorp/go-version"
-	git "gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/config"
-	"gopkg.in/src-d/go-git.v4/plumbing"
-	"gopkg.in/src-d/go-git.v4/plumbing/object"
-	githttp "gopkg.in/src-d/go-git.v4/plumbing/transport/http"
 
 	"github.com/dpb587/dynamic-metalink-resource/api"
 	"github.com/dpb587/metalink"
@@ -177,35 +171,6 @@ func main() {
 		}
 	}
 
-	r, err := git.PlainOpen(releaseDir)
-	if err != nil {
-		panic(err)
-	}
-	w, err := r.Worktree()
-	if err != nil {
-		panic(err)
-	}
-
-	updateBranch, _ := getStrictFromEnv("GIT_UPDATE_BRANCH")
-	headRef, _ := r.Head()
-	u := plumbing.NewBranchReferenceName(updateBranch)
-	if updateBranch != "" && headRef.Name() != u {
-		fmt.Printf("git checkout %s; before %s\n", u, headRef.Name())
-		_ = r.Fetch(&git.FetchOptions{Force: true})
-		err = w.Checkout(&git.CheckoutOptions{
-			Branch: u,
-			Force:  true,
-			Create: true,
-		})
-		if err != nil {
-			panic(errors.Wrap(err, "check out branch"))
-		}
-		w.Reset(&git.ResetOptions{
-			Commit: headRef.Hash(),
-			Mode:   git.HardReset,
-		})
-	}
-
 	os.Setenv("BOSH_NON_INTERACTIVE", "true")
 
 	blobsData, err := ioutil.ReadFile(filepath.Join(releaseDir, "config", "blobs.yml"))
@@ -223,8 +188,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	commitHeader := "Update blobs:"
-	commitBody := ""
+
 	for _, r := range resourcePaths {
 		localBlobDir := filepath.Dir(r)
 		packageName := filepath.Base(localBlobDir)
@@ -308,18 +272,16 @@ func main() {
 			}
 
 			newBlob.Path = fmt.Sprintf("%s/%s", packageName, file.Name)
-			commitHeader += fmt.Sprintf(" %s", packageName)
-			commitBody += fmt.Sprintf(" - %q --> %q\n", b.Path, newBlob.Path)
 			fmt.Printf("Upgrading blob: %s (%s) --> %s (%s)\n", b.Path, b.Sha, newBlob.Path, newBlob.Sha)
 
 			err = boshRemoveBlob(b.Path, releaseDir)
 			if err != nil {
-				panic(err)
+				panic(errors.Wrap(err, "removing old blobs"))
 			}
 
 			err = boshAddBlob(blobFilePath, newBlob.Path, releaseDir)
 			if err != nil {
-				panic(err)
+				panic(errors.Wrap(err, "adding new blobs"))
 			}
 		}
 
@@ -327,80 +289,14 @@ func main() {
 		if err != nil && !os.IsNotExist(err) {
 			panic(errors.Wrap(err, "writing version"))
 		}
-
-		relVersionPath, err := filepath.Rel(releaseDir, versionPath)
-		if err != nil {
-			panic(errors.Wrap(err, "relativizing version file"))
-		}
-
-		_, err = w.Add(relVersionPath)
-		if err != nil {
-			panic(errors.Wrapf(err, "adding %s", versionPath))
-		}
-	}
-
-	b := filepath.Join("config", "blobs.yml")
-	_, err = w.Add(b)
-	if err != nil {
-		panic(errors.Wrap(err, "adding blobs.yml"))
-	}
-
-	status, err := w.Status()
-	if err != nil {
-		panic(errors.Wrap(err, "status"))
-	}
-	fmt.Println("Status: ", status)
-
-	if status.File(b).Staging != git.Modified {
-		fmt.Println("No changes in git detected.")
-		os.Exit(1)
 	}
 
 	if _, err := os.Stat(filepath.Join(releaseDir, "config", "private.yml")); os.IsNotExist(err) {
 		panic(fmt.Errorf("blobstore credentials not set: %v", err))
 	}
+
 	err = boshUploadBlobs(releaseDir)
 	if err != nil {
 		panic(errors.Wrap(err, "uploading blobs"))
-	}
-
-	_, err = w.Add(b)
-	if err != nil {
-		panic(errors.Wrap(err, "adding blobs.yml"))
-	}
-
-	commitMsg := commitHeader + "\n\n" + commitBody
-	commit, err := w.Commit(commitMsg, &git.CommitOptions{
-		Author: &object.Signature{
-			Name:  getFromEnv("GIT_NAME", "Dependency Bot"),
-			Email: getFromEnv("GIT_EMAIL", "ci@localhost"),
-			When:  time.Now(),
-		},
-	})
-	if err != nil {
-		panic(errors.Wrap(err, "committing"))
-	}
-
-	obj, err := r.CommitObject(commit)
-	if err != nil {
-		panic(errors.Wrap(err, "writing commit"))
-	}
-	fmt.Println(obj)
-
-	token, _ := getStrictFromEnv("GITHUB_TOKEN")
-	if token != "" {
-		fmt.Println("Pushing state")
-		refSpecs := config.RefSpec("+" + u.String() + ":refs/remotes/origin/" + updateBranch)
-		err = r.Push(&git.PushOptions{
-			Auth: &githttp.BasicAuth{
-				Username: "token",
-				Password: token,
-			},
-			RefSpecs: []config.RefSpec{refSpecs},
-			Progress: os.Stdout,
-		})
-		if err != nil {
-			panic(err)
-		}
 	}
 }
